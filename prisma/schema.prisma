@@ -1,13 +1,98 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
-  provider = "prisma-client"
-  output   = "../generated/prisma"
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+  moduleFormat = "cjs"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────
+// Vehicle — registered vehicle data used for
+// eligibility checks and CO₂ model inputs
+// ─────────────────────────────────────────────
+model Vehicle {
+  plate                   String   @id @unique
+  brand                   String
+  model                   String
+  year                    Int
+  vehicle_type            String   // sedan, SUV, truck, etc.
+  engine_size_l           Float    // maps to co2.csv: Engine_Size_L
+  cylinders               Int      // maps to co2.csv: Cylinders
+  transmission            String   // maps to co2.csv: Transmission
+  fuel_type               String   // maps to co2.csv: Fuel_Type
+  fuel_consumption_comb   Float    // maps to co2.csv: Fuel_Consumption_Comb_L_per_100km
+  is_biodiesel_compatible Boolean  @default(false)
+
+  drivers        Driver[]
+  fueling_events FuelingEvent[]
+}
+
+// ─────────────────────────────────────────────
+// Driver — end user enrolled in the loyalty program
+// ─────────────────────────────────────────────
+model Driver {
+  driver_id           String   @id @default(uuid())
+  full_name           String
+  cpf                 String   @unique
+  email               String   @unique
+  phone               String
+
+  plate               String?
+  vehicle             Vehicle? @relation(fields: [plate], references: [plate])
+
+  enrolled_station_id String?
+  enrolled_station    Station? @relation(fields: [enrolled_station_id], references: [station_id])
+
+  is_eligible         Boolean  @default(false)
+  point_balance       Float    @default(0)
+  created_at          DateTime @default(now())
+
+  fueling_events FuelingEvent[]
+}
+
+// ─────────────────────────────────────────────
+// Station — B2B fuel station partner
+// ─────────────────────────────────────────────
+model Station {
+  station_id   String   @id @default(uuid())
+  company_name String
+  cnpj         String   @unique
+  address      String
+  city         String   @default("Salvador")
+  state        String   @default("Bahia")
+  api_key      String   @unique
+  is_active    Boolean  @default(true)
+  created_at   DateTime @default(now())
+
+  drivers        Driver[]
+  fueling_events FuelingEvent[]
+}
+
+// ─────────────────────────────────────────────
+// FuelingEvent — discrete biodiesel transaction;
+// the unit of points calculation
+// ─────────────────────────────────────────────
+model FuelingEvent {
+  event_id                  String   @id @default(uuid())
+
+  driver_id                 String
+  driver                    Driver   @relation(fields: [driver_id], references: [driver_id])
+
+  station_id                String
+  station                   Station  @relation(fields: [station_id], references: [station_id])
+
+  plate                     String
+  vehicle                   Vehicle  @relation(fields: [plate], references: [plate])
+
+  liters_dispensed          Float    // volume of biofuel dispensed (L)
+
+  co2_fossil_predicted_g_km Float    // model output: predicted fossil CO₂ (g/km)
+  co2_biofuel_actual_g_km   Float    // known biofuel CO₂ value (platform constant / lookup)
+  co2_saved_g_km            Float    // fossil − biofuel
+  efficiency_multiplier     Float    // vehicle efficiency bonus factor
+  points_awarded            Float    // points credited to the driver
+
+  event_timestamp           DateTime @default(now())
 }
