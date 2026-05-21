@@ -1,98 +1,498 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
+# BioPoints API
+
+**Biofuel Loyalty & Emissions Reward Platform**
+Pilot city: Salvador, Bahia, Brazil
+Domains: Smart Cities · Climate Change · Energetic Transition
+
+BioPoints rewards drivers for choosing biodiesel over fossil fuels. Each fueling event triggers a CO₂ prediction model that converts estimated emissions savings into redeemable loyalty points, creating a direct financial incentive for the energetic transition.
+
+---
+
+## Table of Contents
+
+- [Architecture Overview](#architecture-overview)
+- [Prerequisites](#prerequisites)
+- [Setup](#setup)
+- [Environment Variables](#environment-variables)
+- [Database](#database)
+- [Running the API](#running-the-api)
+- [API Routes](#api-routes)
+- [Route Reference](#route-reference)
+  - [Vehicles](#vehicles)
+  - [Stations](#stations)
+  - [Drivers](#drivers)
+  - [Fueling Events](#fueling-events)
+
+---
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   NestJS REST API                   │
+│  Vehicle · Driver · Station · Events · Prediction   │
+└────────────────────┬────────────────────────────────┘
+                     │
+         ┌───────────┴───────────┐
+         │                       │
+   ┌─────▼──────┐        ┌───────▼────────┐
+   │ PostgreSQL  │        │  Python Script  │
+   │  (Prisma)  │        │  predict.py     │
+   └────────────┘        │  Random Forest  │
+                         └────────────────┘
+```
+
+**Stack**
+
+- Backend: Node.js · NestJS · Prisma ORM
+- Database: PostgreSQL
+- Prediction model: Python 3 · scikit-learn (Random Forest Regressor)
+- Reference dataset: `co2.csv` (used to train the model and seed `VehicleSpec`)
+
+---
+
+## Prerequisites
+
+- Node.js ≥ 18
+- npm ≥ 9
+- PostgreSQL ≥ 14
+- Python 3 with `scikit-learn`, `pandas`, and `joblib` installed
+- `python3` available on your system PATH
+
+---
+
+## Setup
+
+### 1. Clone and install dependencies
+
+```bash
+git clone https://github.com/your-org/biopoints-api.git
+cd biopoints-api
+npm install
+```
+
+### 2. Install the CSV parser (required for the seed script)
+
+```bash
+npm install --save-dev csv-parse
+```
+
+### 3. Configure environment variables
+
+Copy the example file and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```env
+DATABASE_URL="postgresql://user:password@localhost:5432/biopoints"
+PORT=3000
+```
+
+See [Environment Variables](#environment-variables) for details on each field.
+
+### 4. Generate the Prisma client
+
+```bash
+npx prisma generate
+```
+
+### 5. Run database migrations
+
+```bash
+npx prisma migrate dev --name init
+```
+
+### 6. Seed the VehicleSpec reference table
+
+Place your `co2.csv` file at `prisma/data/co2.csv`, then run:
+
+```bash
+npx prisma db seed
+```
+
+This reads every row from `co2.csv` and inserts it into the `VehicleSpec` table. It is safe to re-run — duplicate rows are skipped automatically.
+
+---
+
+## Environment Variables
+
+| Variable         | Description                                | Example                                             |
+| ---------------- | ------------------------------------------ | --------------------------------------------------- |
+| `DATABASE_URL` | PostgreSQL connection string               | `postgresql://user:pass@localhost:5432/biopoints` |
+| `PORT`         | Port the API listens on (default:`3000`) | `3000`                                            |
+
+---
+
+## Database
+
+The schema contains five models:
+
+| Model            | Description                                                                                 |
+| ---------------- | ------------------------------------------------------------------------------------------- |
+| `VehicleSpec`  | Read-only reference table seeded from `co2.csv`. Used for spec lookup and model training. |
+| `Vehicle`      | Real registered vehicles, linked to drivers. Contains license plate.                        |
+| `Driver`       | End users enrolled in the loyalty program.                                                  |
+| `Station`      | B2B fuel station partners. Each holds a unique API key.                                     |
+| `FuelingEvent` | Each biodiesel transaction. Stores CO₂ prediction outputs and points awarded.              |
+
+To open Prisma Studio and inspect your data visually:
+
+```bash
+npx prisma studio
+```
+
+---
+
+## Running the API
+
+**Development (with hot reload):**
+
+```bash
+npm run start:dev
+```
+
+**Production:**
+
+```bash
+npm run build
+npm run start
+```
+
+The API will be available at `http://localhost:3000` (or the port set in `.env`).
+
+---
+
+## API Routes
+
+| #  | Method   | Route                    | Description                            | Auth          |
+| -- | -------- | ------------------------ | -------------------------------------- | ------------- |
+| 1  | `POST` | `/vehicles`            | Register a vehicle                     | —            |
+| 2  | `GET`  | `/vehicles`            | List all vehicles                      | —            |
+| 3  | `GET`  | `/vehicles/:id`        | Get vehicle by ID                      | —            |
+| 4  | `POST` | `/stations`            | Register a fuel station                | —            |
+| 5  | `GET`  | `/stations`            | List all active stations               | —            |
+| 6  | `GET`  | `/stations/:id`        | Get station by ID                      | —            |
+| 7  | `POST` | `/drivers`             | Register a driver                      | —            |
+| 8  | `GET`  | `/drivers/:id`         | Get driver profile & point balance     | —            |
+| 9  | `GET`  | `/drivers/:id/events`  | Get driver's fueling history           | —            |
+| 10 | `POST` | `/stations/:id/events` | Register a fueling event ← core route | `x-api-key` |
+| 11 | `GET`  | `/stations/:id/events` | Get all events at a station            | —            |
+
+> Routes marked with `x-api-key` require the station's API key in the request header.
+> The key is returned once when the station is created — store it securely.
+
+---
+
+## Route Reference
+
+The correct order for a first setup is: **vehicle → station → driver → fueling event**.
+
+---
+
+### Vehicles
+
+#### `POST /vehicles`
+
+Registers a vehicle in the platform. The `is_biodiesel_compatible` field is computed automatically from `fuel_type` if not provided — vehicles with `fuel_type: "D"` (diesel) are flagged as compatible.
+
+**Request body**
+
+```json
+{
+  "plate": "BHZ-1234",
+  "brand": "Volkswagen",
+  "model": "Delivery 9.170",
+  "year": 2021,
+  "vehicle_type": "truck",
+  "engine_size_l": 5.9,
+  "cylinders": 6,
+  "transmission": "M6",
+  "fuel_type": "D",
+  "fuel_consumption_comb": 12.5,
+  "is_biodiesel_compatible": true
+}
+```
+
+**Response `201`**
+
+```json
+{
+  "vehicle_id": "a1b2c3d4-0000-0000-0000-111122223333",
+  "plate": "BHZ-1234",
+  "brand": "Volkswagen",
+  "model": "Delivery 9.170",
+  "year": 2021,
+  "vehicle_type": "truck",
+  "engine_size_l": 5.9,
+  "cylinders": 6,
+  "transmission": "M6",
+  "fuel_type": "D",
+  "fuel_consumption_comb": 12.5,
+  "is_biodiesel_compatible": true
+}
+```
+
+---
+
+#### `GET /vehicles`
+
+Returns all registered vehicles ordered by brand.
+
+**Response `200`**
+
+```json
+[
+  {
+    "vehicle_id": "a1b2c3d4-0000-0000-0000-111122223333",
+    "plate": "BHZ-1234",
+    "brand": "Volkswagen",
+    "model": "Delivery 9.170",
+    "year": 2021,
+    "vehicle_type": "truck",
+    "engine_size_l": 5.9,
+    "cylinders": 6,
+    "transmission": "M6",
+    "fuel_type": "D",
+    "fuel_consumption_comb": 12.5,
+    "is_biodiesel_compatible": true
+  }
+]
+```
+
+---
+
+#### `GET /vehicles/:id`
+
+Returns a single vehicle by UUID.
+
+**Response `200`** — same shape as a single item from `GET /vehicles`.
+
+**Response `404`**
+
+```json
+{
+  "message": "Vehicle a1b2c3d4-0000-0000-0000-111122223333 not found.",
+  "error": "Not Found",
+  "statusCode": 404
+}
+```
+
+---
+
+### Stations
+
+#### `POST /stations`
+
+Registers a fuel station as a B2B partner. A cryptographically random `api_key` is generated automatically if not supplied. **The key is returned only once — save it immediately.**
+
+**Request body**
+
+```json
+{
+  "company_name": "Posto BioMax Salvador",
+  "cnpj": "12345678000199",
+  "address": "Av. Tancredo Neves, 620 - Caminho das Árvores",
+  "city": "Salvador",
+  "state": "Bahia"
+}
+```
+
+**Response `201`**
+
+```json
+{
+  "station_id": "16860955-a634-4212-bd70-a71affac82ae",
+  "company_name": "Posto BioMax Salvador",
+  "cnpj": "12345678000199",
+  "address": "Av. Tancredo Neves, 620 - Caminho das Árvores",
+  "city": "Salvador",
+  "state": "Bahia",
+  "api_key": "0ea6dcd76f25630c4dd498d54a...",
+  "is_active": true,
+  "created_at": "2025-05-21T14:00:00.000Z"
+}
+```
+
+---
+
+#### `GET /stations`
+
+Returns all active stations ordered by registration date.
+
+---
+
+#### `GET /stations/:id`
+
+Returns a single station by UUID.
+
+---
+
+### Drivers
+
+#### `POST /drivers`
+
+Registers a driver and links them to a vehicle and a station. `is_eligible` is computed automatically — it is `true` if the linked vehicle has `is_biodiesel_compatible: true`.
+
+**Request body**
+
+```json
+{
+  "full_name": "Carlos Eduardo Santos",
+  "cpf": "12345678900",
+  "email": "carlos.santos@email.com",
+  "phone": "+55 71 99999-0001",
+  "vehicle_id": "a1b2c3d4-0000-0000-0000-111122223333",
+  "enrolled_station_id": "16860955-a634-4212-bd70-a71affac82ae"
+}
+```
+
+**Response `201`**
+
+```json
+{
+  "driver_id": "6c70bc98-19fa-41f7-b27a-950da8d0eaf0",
+  "full_name": "Carlos Eduardo Santos",
+  "cpf": "12345678900",
+  "email": "carlos.santos@email.com",
+  "phone": "+55 71 99999-0001",
+  "vehicle_id": "a1b2c3d4-0000-0000-0000-111122223333",
+  "enrolled_station_id": "16860955-a634-4212-bd70-a71affac82ae",
+  "is_eligible": true,
+  "point_balance": 0,
+  "created_at": "2025-05-21T14:05:00.000Z",
+  "vehicle": {
+    "plate": "BHZ-1234",
+    "brand": "Volkswagen",
+    "model": "Delivery 9.170"
+  },
+  "enrolled_station": {
+    "company_name": "Posto BioMax Salvador"
+  }
+}
+```
+
+---
+
+#### `GET /drivers/:id`
+
+Returns a driver's profile, current point balance, linked vehicle, and enrolled station.
+
+**Response `200`** — same shape as the `POST /drivers` response, with an updated `point_balance` after fueling events.
+
+---
+
+#### `GET /drivers/:id/events`
+
+Returns the full fueling history for a driver, newest first.
+
+**Response `200`**
+
+```json
+[
+  {
+    "event_id": "e9f1a2b3-0000-0000-0000-aabbccddeeff",
+    "driver_id": "6c70bc98-19fa-41f7-b27a-950da8d0eaf0",
+    "station_id": "16860955-a634-4212-bd70-a71affac82ae",
+    "vehicle_id": "a1b2c3d4-0000-0000-0000-111122223333",
+    "liters_dispensed": 40,
+    "co2_fossil_predicted_g_km": 333.25,
+    "co2_biofuel_actual_g_km": 45,
+    "co2_saved_g_km": 288.25,
+    "efficiency_multiplier": 1.44,
+    "points_awarded": 165.84,
+    "event_timestamp": "2025-05-21T14:10:00.000Z",
+    "station": { "company_name": "Posto BioMax Salvador" },
+    "vehicle": { "plate": "BHZ-1234", "brand": "Volkswagen" }
+  }
+]
+```
+
+---
+
+### Fueling Events
+
+#### `POST /stations/:id/events`
+
+**The core route.** Called by the fuel station's POS system when a biodiesel transaction occurs.
+
+Internally it runs the full pipeline:
+
+1. Validates the station's API key
+2. Looks up the vehicle by plate
+3. Resolves the driver linked to that vehicle
+4. Calls the Python prediction model with the vehicle's specs
+5. Persists the `FuelingEvent` record
+6. Credits the computed points to the driver's balance
+
+**Headers**
+
+```
+x-api-key: 0ea6dcd76f25630c4dd498d54a...
+Content-Type: application/json
+```
+
+**Request body**
+
+```json
+{
+  "plate": "BHZ-1234",
+  "liters_dispensed": 40.0
+}
+```
+
+**Response `201`**
+
+```json
+{
+  "event_id": "e9f1a2b3-0000-0000-0000-aabbccddeeff",
+  "driver_id": "6c70bc98-19fa-41f7-b27a-950da8d0eaf0",
+  "station_id": "16860955-a634-4212-bd70-a71affac82ae",
+  "vehicle_id": "a1b2c3d4-0000-0000-0000-111122223333",
+  "liters_dispensed": 40,
+  "co2_fossil_predicted_g_km": 333.25,
+  "co2_biofuel_actual_g_km": 45,
+  "co2_saved_g_km": 288.25,
+  "efficiency_multiplier": 1.44,
+  "points_awarded": 165.84,
+  "event_timestamp": "2025-05-21T14:10:00.000Z",
+  "message": "165.84 BioPoints awarded to Carlos Eduardo Santos (plate: BHZ-1234).",
+  "driver": { "full_name": "Carlos Eduardo Santos", "point_balance": 165.84 },
+  "station": { "company_name": "Posto BioMax Salvador" },
+  "vehicle": { "plate": "BHZ-1234", "brand": "Volkswagen", "model": "Delivery 9.170" }
+}
+```
+
+**Response `401`** — missing or invalid API key
+
+```json
+{
+  "message": "Invalid API key or station is inactive.",
+  "error": "Unauthorized",
+  "statusCode": 401
+}
+```
+
+**Response `404`** — plate not registered
+
+```json
+{
+  "message": "No vehicle found with plate \"BHZ-1234\". The driver must register before fueling.",
+  "error": "Not Found",
+  "statusCode": 404
+}
+```
+
+---
+
+#### `GET /stations/:id/events`
+
+Returns all fueling events recorded at a station, newest first. Useful for B2B reporting dashboards.
+
+**Response `200`** — array of fueling event objects (same shape as `POST /stations/:id/events` response, without `message`).`<p align="center">`
+  `<a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" />``</a>`
+
 </p>
-
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
-
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
-
-## Description
-
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
-
-```bash
-$ npm install
-```
-
-## Compile and run the project
-
-```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
-```
-
-## Run tests
-
-```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
-```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
