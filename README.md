@@ -14,6 +14,7 @@ BioPoints rewards drivers for choosing biodiesel over fossil fuels. Each fueling
 - [Prerequisites](#prerequisites)
 - [Setup](#setup)
 - [Environment Variables](#environment-variables)
+- [Venv](#venv)
 - [Database](#database)
 - [Running the API](#running-the-api)
 - [API Routes](#api-routes)
@@ -124,6 +125,28 @@ This reads every row from `co2.csv` and inserts it into the `VehicleSpec` table.
 | ---------------- | ------------------------------------------ | --------------------------------------------------- |
 | `DATABASE_URL` | PostgreSQL connection string               | `postgresql://user:pass@localhost:5432/biopoints` |
 | `PORT`         | Port the API listens on (default:`3000`) | `3000`                                            |
+
+---
+
+## Venv
+
+Create venv file:
+
+```bash
+python3 -m venv venv
+```
+
+Activate venv file:
+
+```bash
+source venv/bin/activate
+```
+
+After this, install requirements:
+
+```bash
+pip install -r requirements.txt
+```
 
 ---
 
