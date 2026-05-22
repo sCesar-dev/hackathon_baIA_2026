@@ -5,6 +5,7 @@ import { DriverModule } from './driver/driver.module';
 import { StationModule } from './station/station.module';
 import { PredictionModule } from './prediction/prediction.module';
 import { EventsModule } from './events/events.module';
+import { FuelingModule } from './fueling/fueling.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { EventsModule } from './events/events.module';
 
     // Fueling event pipeline (depends on Driver, Station, Prediction)
     EventsModule,
+    FuelingModule,
   ],
 })
 export class AppModule {}
