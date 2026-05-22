@@ -4,6 +4,7 @@
 /build
 src/generated
 
+.claude
 # Logs
 logs
 *.log
