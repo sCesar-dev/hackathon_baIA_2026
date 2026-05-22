@@ -23,6 +23,7 @@ BioPoints rewards drivers for choosing biodiesel over fossil fuels. Each fueling
   - [Stations](#stations)
   - [Drivers](#drivers)
   - [Fueling Events](#fueling-events)
+- [ML Model FAQ](#ml-model-faq)
 
 ---
 
@@ -515,7 +516,96 @@ Content-Type: application/json
 
 Returns all fueling events recorded at a station, newest first. Useful for B2B reporting dashboards.
 
-**Response `200`** — array of fueling event objects (same shape as `POST /stations/:id/events` response, without `message`).`<p align="center">`
+**Response `200`** — array of fueling event objects (same shape as `POST /stations/:id/events` response, without `message`).
+
+---
+
+## ML Model FAQ
+
+### What dataset was used to train the model?
+
+The Canadian Government's CO₂ emissions dataset (NRCan), a public dataset where each row represents a unique vehicle model year tested under standardized driving cycles (55% city / 45% highway). The target variable is `CO2_Emissions_g_per_km` — grams of CO₂ emitted per kilometer.
+
+The six features fed to the model are:
+
+| Feature | Type |
+|---|---|
+| `Engine_Size_L` | Continuous |
+| `Cylinders` | Integer |
+| `Transmission` | Categorical (e.g. `AS6`, `M5`, `AV7`) |
+| `Fuel_Type` | Categorical (`X` regular, `Z` premium, `D` diesel, `E` ethanol, `N` natural gas) |
+| `Fuel_Consumption_Comb_L_per_100_km` | Continuous |
+| `Vehicle_type` | Categorical (e.g. `MID-SIZE`, `SUV - STANDARD`, `COMPACT`) |
+
+---
+
+### What algorithm was chosen and why not just Linear Regression?
+
+A **Random Forest Regressor** with 100 trees. At each split the model randomly samples `sqrt(n_features)` candidate features before choosing the best one — this is what distinguishes it from plain bagging and reduces the correlation between trees.
+
+For this specific dataset, a linear model with a `Fuel_Consumption × Fuel_Type` interaction term would achieve nearly identical accuracy, because CO₂ emissions are mathematically derived from fuel consumption via a fixed combustion chemistry formula. Random Forest was chosen for two practical reasons: (1) it handles the 20+ categories in `Transmission` and `Vehicle_type` without manually engineering interactions, and (2) the `handle_unknown='ignore'` setting on the encoder means the system degrades gracefully if a novel vehicle class arrives at inference rather than crashing.
+
+---
+
+### Why is there no feature scaling?
+
+Intentional. Tree-based methods are invariant to monotonic transformations of features — rescaling `Engine_Size_L` from 2.0 to a z-score of −0.3 produces identical splits and identical predictions. Adding a `StandardScaler` would have zero effect on model quality and would only complicate the pipeline.
+
+---
+
+### What metrics were reported and what values should we expect?
+
+Training reports **R²** (coefficient of determination) and **MAE** (Mean Absolute Error in g/km).
+
+Expected values on this dataset: **R² ≈ 0.98–0.99**, **MAE ≈ 2–5 g/km**.
+
+Those numbers look impressive, but context matters: CO₂ emissions in this dataset are *physically derived* from fuel consumption using the formula `CO₂ (g/km) = Fuel_Consumption (L/100 km) × CO₂_factor_per_litre / 100`. The relationship is near-deterministic once you know fuel type and fuel consumption. The high R² reflects a domain identity, not a deep statistical discovery. The honest framing is: the model reliably quantifies counterfactual fossil-fuel emissions within ~3–5 g/km, which is all it needs to compute meaningful CO₂-savings incentives.
+
+---
+
+### Why no RMSE? Is MAE sufficient?
+
+MAE is more interpretable for this use case — it reads directly as "average error in g/km." RMSE penalizes large errors quadratically, which matters when a large misprediction for a heavy truck is significantly worse than for a compact car. Neither metric is wrong; RMSE alongside R² would be more standard in a publication. For a production incentive system, MAE is the more actionable number.
+
+---
+
+### Are `Engine_Size_L` and `Cylinders` redundant with `Fuel_Consumption`?
+
+They are highly correlated but not perfectly collinear. Random Forest handles this via the random subspace sampling at each split — correlated features compete for the same split slots, so each one's measured importance is diluted. In practice `Fuel_Consumption_Comb_L_per_100_km` dominates feature importance, while `Engine_Size_L` and `Cylinders` contribute marginally on the residuals. Removing them would slightly increase MAE on unusual vehicles (e.g. high-displacement low-consumption hybrids).
+
+---
+
+### How does the model prevent data leakage in preprocessing?
+
+The entire pipeline is wrapped in a scikit-learn `Pipeline` object. The `OneHotEncoder` is fit only on the training split inside `pipeline.fit(X_train, y_train)` and then applied read-only during `predict()`. If the encoder were fit on the full dataset before the split, category frequency information from the test set would leak into the training distribution. The Pipeline guarantees this cannot happen.
+
+---
+
+### What does `handle_unknown='ignore'` mean in practice?
+
+If a vehicle at inference time carries a `Transmission` or `Vehicle_type` value not seen during training, the encoder sets all corresponding one-hot columns to zero instead of raising an error. The model then relies on the remaining features (engine size, cylinders, fuel consumption) to produce a prediction. This is the correct production behavior — a silent degradation rather than a hard failure.
+
+---
+
+### Is the model actually predicting biodiesel emissions?
+
+No — and that is by design. The model was trained on fossil-fuel vehicle data, so it predicts what CO₂ the vehicle *would emit burning fossil fuel*. This is the **counterfactual baseline**. The actual biodiesel CO₂ is then derived by applying a fixed reduction factor (`BIOFUEL_CO2_FACTOR = 0.30`), meaning B100 biodiesel is modelled as emitting 70% less CO₂ than the fossil-fuel baseline. The difference is the avoided emissions that drive the BioPoints calculation.
+
+One important clarification for a technically precise audience: the 70% figure is a **lifecycle (Well-to-Wheel)** estimate — it accounts for land use, production, and transport of the fuel, not just combustion. At the tailpipe only, B100 CO₂ is similar to conventional diesel. The lifecycle framing is the correct one for a climate impact incentive, but it should be stated explicitly.
+
+---
+
+### Was cross-validation performed?
+
+No. The training script uses a single 80/20 holdout split with `random_state=42`. This gives a reproducible point estimate but no confidence interval on the generalization error. With approximately 7,000 rows in the dataset, a 5-fold cross-validation would provide a more reliable estimate of variance across splits. The `random_state` ensures reproducibility — it does not substitute for cross-validation.
+
+---
+
+### Why save the model with `joblib` instead of `pickle`?
+
+`joblib` is the recommended serialization library for scikit-learn models because it uses memory-mapped NumPy arrays internally, resulting in faster serialization and smaller files when the object contains large arrays (as decision tree ensembles do). Standard `pickle` would produce a functionally equivalent file but slower to write and larger on disk.
+
+`<p align="center">`
   `<a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" />``</a>`
 
 </p>

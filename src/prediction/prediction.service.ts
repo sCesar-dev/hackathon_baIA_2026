@@ -37,7 +37,7 @@ export interface PredictionOutput {
  * PredictionService
  *
  * Communicates with the Python Random Forest model via child_process.
- * The Python script (scripts/predict.py) reads a JSON payload from stdin
+ * The Python script (ml/pipeline/predict.py) reads a JSON payload from stdin
  * and writes a JSON result to stdout.
  *
  * Protocol:
@@ -53,7 +53,8 @@ export class PredictionService {
   /** Absolute path to the Python prediction script. */
   private readonly scriptPath = path.resolve(
     process.cwd(),
-    'scripts',
+    'ml',
+    'pipeline',
     'predict.py',
   );
 

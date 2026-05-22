@@ -15,7 +15,10 @@ async function bootstrap() {
   );
 
   // CORS — adjust origin for production
-  app.enableCors();
+  app.enableCors({
+  origin: 'http://localhost:3000', // URL do frontend
+  credentials: true,
+});
 
   const port = process.env.PORT ?? 3000;
   await app.listen(port);
