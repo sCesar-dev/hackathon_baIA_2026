@@ -6,6 +6,8 @@ import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
+const BASE_RATE = 10;
+
 async function getCO2Baseline(vehicleData: any): Promise<number> {
   const jsonData = JSON.stringify(vehicleData);
   // Chama o script python passando o JSON do veículo
